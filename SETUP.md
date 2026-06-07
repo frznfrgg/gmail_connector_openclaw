@@ -124,13 +124,6 @@ Create the main workspace:
 ```bash
 mkdir -p /home/openclaw/openclaw_workspace/skills
 
-cat > /home/openclaw/openclaw_workspace/AGENTS.md <<'EOF'
-This OpenClaw workspace is used for normal OpenClaw runtime work.
-
-Do not edit the OpenClaw source checkout unless the user explicitly asks.
-Keep temporary files under this workspace or under /tmp.
-EOF
-
 openclaw config set agents.defaults.workspace "/home/openclaw/openclaw_workspace"
 ```
 
@@ -191,7 +184,19 @@ Why: two Google auth layers are needed.
 - `gcloud` manages Google Cloud resources: APIs, Pub/Sub topic, Pub/Sub subscription.
 - `gog` manages user OAuth tokens for the Gmail account: reading messages, downloading attachments, sending replies.
 
-Create or choose a Google Cloud project, then export it:
+### 5.1 Create Or Choose The Google Cloud Project
+
+Why: Gmail push notifications need a Google Cloud project because Gmail publishes mailbox changes into a Pub/Sub topic owned by that project. The same project also owns the OAuth app configuration that `gog` uses when it asks the Gmail account for permission.
+
+In Google Cloud Console:
+
+1. Open `https://console.cloud.google.com/`.
+2. Use the project selector in the top bar.
+3. Either choose an existing project or click `New project`.
+4. Give it a clear name, for example `openclaw-gmail`.
+5. After creation, copy the `Project ID`, not just the display name.
+
+On the VPS, export that project id:
 
 ```bash
 export GCP_PROJECT="your-project-id"
@@ -200,7 +205,25 @@ gcloud config set project "$GCP_PROJECT"
 gcloud projects describe "$GCP_PROJECT"
 ```
 
-Enable APIs:
+Expected: `gcloud projects describe` prints the project and `lifecycleState: ACTIVE`.
+
+### 5.2 Enable Required APIs
+
+Why: Google blocks API calls until each API is enabled for the project. This setup needs Gmail for messages, Pub/Sub for push delivery, and optionally Drive/Docs/Sheets because the `gog` skill can work with attached or referenced Google files.
+
+Console path:
+
+1. Open `Google Cloud Console`.
+2. Select your project.
+3. Go to `APIs & Services` -> `Library`.
+4. Search for and enable each API:
+   - `Gmail API`
+   - `Cloud Pub/Sub API`
+   - `Google Drive API`
+   - `Google Docs API`
+   - `Google Sheets API`
+
+CLI equivalent:
 
 ```bash
 gcloud services enable \
@@ -213,19 +236,89 @@ gcloud services enable \
   --quiet
 ```
 
-Create OAuth client credentials:
-
-1. Open Google Cloud Console.
-2. Select the project.
-3. Configure OAuth consent screen.
-4. Add the Gmail account as a test user if the app is in testing mode.
-5. Create OAuth Client ID.
-6. Choose "Desktop app".
-7. Download the JSON file to the VPS, for example:
+Verify:
 
 ```bash
-/home/openclaw/google-oauth-client.json
+gcloud services list --enabled --project "$GCP_PROJECT" \
+  | grep -E 'gmail|pubsub|drive|docs|sheets'
 ```
+
+### 5.3 Configure Google Auth Platform / OAuth Consent
+
+Why: `gog auth add` opens a Google OAuth consent flow. Google will not issue user tokens for Gmail/Drive/Docs/Sheets until the project has an OAuth consent configuration.
+
+Console path:
+
+1. Open `Google Cloud Console`.
+2. Select your project.
+3. Go to `Google Auth platform` -> `Branding`.
+4. If Google says the Auth platform is not configured, click `Get started`.
+5. Under `App information`:
+   - `App name`: use something recognizable, for example `OpenClaw Gmail Connector`.
+   - `User support email`: choose an email you control.
+6. Under `Audience`:
+   - For a personal Gmail account or accounts outside one Google Workspace organization, choose `External`.
+   - For a Google Workspace-only deployment where the OpenClaw Gmail account is inside your organization, `Internal` can be used if your admin policy allows it.
+7. Under `Contact information`, enter your email.
+8. Accept the Google API Services User Data Policy and create the app.
+
+If you chose `External`, keep the app in `Testing` mode unless you plan to publish and verify it. Then add test users:
+
+1. Go to `Google Auth platform` -> `Audience`.
+2. In `Test users`, click `Add users`.
+3. Add the Gmail account that OpenClaw will log into with `gog auth add`.
+4. If you later switch the OpenClaw Gmail account, add the new account here before authorizing it.
+
+Important: test users are OAuth users, not email senders. People who only send emails to OpenClaw do not need to be listed here.
+
+### 5.4 Configure OAuth Scopes
+
+Why: the OAuth app should declare the Google Workspace data it may request. This reduces confusing consent prompts and makes it clear why the app needs access.
+
+Console path:
+
+1. Go to `Google Auth platform` -> `Data Access`.
+2. Click `Add or remove scopes`.
+3. Add scopes for the APIs this connector uses. For a broad private VPS connector, use:
+   - `https://www.googleapis.com/auth/gmail.modify`
+   - `https://www.googleapis.com/auth/gmail.send`
+   - `https://www.googleapis.com/auth/drive`
+   - `https://www.googleapis.com/auth/documents`
+   - `https://www.googleapis.com/auth/spreadsheets`
+4. Save the scope selection.
+
+Notes:
+
+- `gmail.modify` covers reading messages, reading attachments, mailbox history, and Gmail watch operations. `gmail.send` makes the send permission explicit in the consent screen.
+- `drive` is broad and restricted, but it matches the "agent may need arbitrary Drive access" behavior. If you want a narrower deployment, start with `https://www.googleapis.com/auth/drive.file` instead and only switch to `drive` if `gog` cannot access the files you need.
+- `documents` and `spreadsheets` allow Docs and Sheets operations requested by the `gog` skill.
+- For a private testing deployment, do not submit the app for verification unless Google explicitly blocks the exact account you are authorizing. In testing mode, the allowlisted OAuth test users can authorize the app even if the app is not publicly verified.
+- External apps in `Testing` mode can receive refresh tokens that expire after 7 days for non-basic scopes. For a long-running VPS, expect to either reauthorize periodically or move the OAuth app out of Testing mode and handle Google's verification requirements for sensitive/restricted scopes.
+
+### 5.5 Create OAuth Client Credentials
+
+Why: `gog` runs as a local CLI on the VPS, so it needs an OAuth Client ID of type `Desktop app`. Do not create a `Web application` client for this flow.
+
+Console path:
+
+1. Go to `Google Auth platform` -> `Clients`.
+2. Click `Create Client`.
+3. For `Application type`, choose `Desktop app`.
+4. Name it, for example `OpenClaw VPS gog`.
+5. Click `Create`.
+6. Download the client JSON file.
+
+Copy the downloaded JSON to the VPS, for example:
+
+```bash
+# Run this from your local machine.
+scp ~/Downloads/client_secret_*.json openclaw@your-vps:/home/openclaw/google-oauth-client.json
+
+# Run this on the VPS.
+chmod 600 /home/openclaw/google-oauth-client.json
+```
+
+The JSON file is private. Do not commit it, paste it into chat, or publish it.
 
 Register the OAuth client with `gog`:
 
@@ -325,7 +418,101 @@ Expected important fields:
 - `tailscale.mode`: `funnel`
 - `tailscale.path`: `/gmail-pubsub`
 
-If Google Cloud CLI IAM or Pub/Sub commands hang, use the API fallback.
+If Google Cloud CLI IAM or Pub/Sub commands hang, prefer the Google Cloud Shell fallback below. Cloud Shell runs inside Google's network and is usually more reliable for Pub/Sub setup than a VPS with flaky Google API connectivity. Use the direct API fallback only when Cloud Shell is unavailable.
+
+### Recommended Fallback: Google Cloud Shell
+
+Use this when `openclaw webhooks gmail setup`, `gcloud pubsub ...`, or Pub/Sub `curl` calls hang/fail on the VPS.
+
+First, get the public push endpoint from the VPS. The endpoint has this shape:
+
+```text
+https://<tailscale-hostname>/gmail-pubsub?token=<push-token>
+```
+
+If `openclaw webhooks gmail setup` already wrote a token, read it from the raw config:
+
+```bash
+export TAILSCALE_HOST="$(tailscale funnel status | awk '/^https:\/\// {print $1; exit}')"
+
+python3 - <<'PY'
+import json, pathlib, os
+
+cfg = json.load(open(pathlib.Path.home() / ".openclaw" / "openclaw.json"))
+gmail = cfg.get("hooks", {}).get("gmail", {})
+base = os.environ["TAILSCALE_HOST"].rstrip("/")
+path = gmail.get("tailscale", {}).get("path", "/gmail-pubsub")
+token = gmail.get("pushToken")
+if not token:
+    raise SystemExit("hooks.gmail.pushToken is missing; run openclaw webhooks gmail setup once or create a token manually")
+print(f"{base}{path}?token={token}")
+PY
+```
+
+If there is no stored token because setup failed early, create one manually:
+
+```bash
+export TAILSCALE_HOST="$(tailscale funnel status | awk '/^https:\/\// {print $1; exit}')"
+export PUSH_TOKEN="$(openssl rand -hex 32)"
+printf '%s/gmail-pubsub?token=%s\n' "${TAILSCALE_HOST%/}" "$PUSH_TOKEN"
+```
+
+Then open Google Cloud Console, start Cloud Shell, and run:
+
+```bash
+export GCP_PROJECT="your-project-id"
+export PUSH_ENDPOINT="https://<tailscale-hostname>/gmail-pubsub?token=<push-token>"
+
+gcloud config set project "$GCP_PROJECT"
+
+gcloud pubsub topics create gog-gmail-watch || true
+
+gcloud pubsub topics add-iam-policy-binding gog-gmail-watch \
+  --member=serviceAccount:gmail-api-push@system.gserviceaccount.com \
+  --role=roles/pubsub.publisher \
+  --quiet
+
+gcloud pubsub subscriptions create gog-gmail-watch-push \
+  --topic gog-gmail-watch \
+  --push-endpoint "$PUSH_ENDPOINT" \
+  --ack-deadline 10 \
+  || gcloud pubsub subscriptions modify-push-config gog-gmail-watch-push \
+       --push-endpoint "$PUSH_ENDPOINT"
+
+gcloud pubsub subscriptions describe gog-gmail-watch-push
+```
+
+Expected subscription fields:
+
+```text
+topic: projects/<project-id>/topics/gog-gmail-watch
+pushConfig:
+  pushEndpoint: https://<tailscale-hostname>/gmail-pubsub?token=...
+state: ACTIVE
+```
+
+After Cloud Shell creates or updates the Pub/Sub resources, return to the VPS and make sure `hooks.gmail` points at the same account/project:
+
+```bash
+export GMAIL_ACCOUNT="openclaw-gmail-account@example.com"
+export GCP_PROJECT="your-project-id"
+export TOPIC="projects/${GCP_PROJECT}/topics/gog-gmail-watch"
+export PUSH_TOKEN="<push-token-from-the-push-endpoint>"
+
+openclaw config set hooks.gmail.account "$GMAIL_ACCOUNT"
+openclaw config set hooks.gmail.label INBOX
+openclaw config set hooks.gmail.topic "$TOPIC"
+openclaw config set hooks.gmail.subscription gog-gmail-watch-push
+openclaw config set hooks.gmail.pushToken "$PUSH_TOKEN"
+openclaw config set hooks.gmail.hookUrl "http://127.0.0.1:18789/hooks/gmail"
+openclaw config set hooks.gmail.includeBody true --strict-json
+openclaw config set hooks.gmail.maxBytes 20000 --strict-json
+openclaw config set hooks.gmail.renewEveryMinutes 720 --strict-json
+openclaw config set hooks.gmail.serve '{"bind":"127.0.0.1","port":8788,"path":"/"}' --strict-json
+openclaw config set hooks.gmail.tailscale '{"mode":"funnel","path":"/gmail-pubsub"}' --strict-json
+```
+
+### Direct API Fallback
 
 Set variables:
 
@@ -338,7 +525,7 @@ export SUB="projects/${GCP_PROJECT}/subscriptions/gog-gmail-watch-push"
 Allow Gmail to publish to the topic:
 
 ```bash
-curl -sS --max-time 30 -X POST \
+curl -4 --http1.1 -sS --connect-timeout 10 --max-time 60 -X POST \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   "https://pubsub.googleapis.com/v1/${TOPIC}:setIamPolicy" \
@@ -366,7 +553,7 @@ cat > /tmp/gog-subscription.json <<EOF
 }
 EOF
 
-curl -sS --max-time 30 -X PUT \
+curl -4 --http1.1 -sS --connect-timeout 10 --max-time 60 -X PUT \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
   "https://pubsub.googleapis.com/v1/${SUB}" \
@@ -384,7 +571,7 @@ cat > /tmp/gog-push-config.json <<EOF
 }
 EOF
 
-curl -sS --max-time 30 -X POST \
+curl -4 --http1.1 -sS --connect-timeout 10 --max-time 60 -X POST \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
   "https://pubsub.googleapis.com/v1/${SUB}:modifyPushConfig" \
@@ -394,7 +581,7 @@ curl -sS --max-time 30 -X POST \
 Verify subscription:
 
 ```bash
-curl -sS --max-time 30 \
+curl -4 --http1.1 -sS --connect-timeout 10 --max-time 60 \
   -H "Authorization: Bearer ${TOKEN}" \
   "https://pubsub.googleapis.com/v1/${SUB}" \
   | python3 -m json.tool
@@ -440,6 +627,7 @@ chmod 600 .env
 Use this format:
 
 ```bash
+GMAIL_ACCOUNT=openclaw-gmail-account@example.com
 GMAIL_ALLOWED_SENDERS=allowed.user@example.com,trusted.sender@example.org
 ```
 
@@ -449,7 +637,9 @@ Install the hook mapping and transform:
 
 ```bash
 cd /home/openclaw/gmail_connector
-export GMAIL_ACCOUNT="openclaw-gmail-account@example.com"
+set -a
+source .env
+set +a
 bash install.sh
 ```
 
