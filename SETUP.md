@@ -58,9 +58,10 @@ This runbook assumes:
 
 If your paths differ, set `MAIN_WS`, `GMAIL_WS`, `GOG_BIN`, or edit the scripts before running them.
 
-## Stage 1: Build OpenClaw From A Repo Clone
+## Stage 1: Build OpenClaw
 
-Why: this setup assumes the VPS runs this cloned OpenClaw repo, not the official packaged installer.
+Important: this repo expects OpenClaw version to be `OpenClaw 2026.4.1`
+You can use the installation guide below, to install the correct version (its a fork from official OpenClaw repo that also introduces VK messaging channel.)
 
 Install baseline tools:
 
@@ -95,7 +96,7 @@ Clone and build:
 
 ```bash
 cd /home/openclaw
-git clone https://github.com/openclaw/openclaw.git openclaw_vk
+git clone https://github.com/frznfrgg/openclaw_vk.git openclaw_vk
 cd /home/openclaw/openclaw_vk
 
 pnpm config set block-exotic-subdeps false --location project
