@@ -1,0 +1,20 @@
+[
+  {
+    "id": "gmail-auto-reply",
+    "match": {
+      "path": "gmail"
+    },
+    "action": "agent",
+    "wakeMode": "now",
+    "name": "Gmail Auto Reply",
+    "sessionKey": "hook:gmail:{{messages[0].id}}",
+    "messageTemplate": "A new allowlisted Gmail message arrived.\n\nOpenClaw Gmail account: __GMAIL_ACCOUNT__\nFrom: {{messages[0].from}}\nMessage ID: {{messages[0].id}}\nSubject: {{messages[0].subject}}\nSnippet: {{messages[0].snippet}}\n\nBody:\n{{messages[0].body}}\n\nTask:\nYou are handling this email as an email-only request. Do not send Telegram, VK, chat, or progress notifications. Send exactly one final Gmail reply, only to the original From sender, never reply-all.\n\nBefore answering:\n1. Extract the sender email address from the From field. If it cannot be extracted, do not send anything.\n2. If the sender is __GMAIL_ACCOUNT__, do not send anything.\n3. Fetch the full Gmail message and inspect attachment metadata when needed. Useful commands:\n   - gog gmail get --account __GMAIL_ACCOUNT__ --format full --json \"{{messages[0].id}}\"\n   - gog gmail attachment --account __GMAIL_ACCOUNT__ <messageId> <attachmentId> --out <directory> --name <filename> --no-input\n   - gog gmail thread get --account __GMAIL_ACCOUNT__ <threadId> --download --out-dir <directory> --json --no-input\n4. If the message has attachments, download all relevant attachments before solving the task and read/process them from local files.\n\nReply rules:\n- Write a concise, useful final reply in the same language as the sender when clear.\n- Use gog to send the reply from __GMAIL_ACCOUNT__.\n- Thread the reply using this Gmail message id: {{messages[0].id}}\n- Use --body-file or --body-file - for multiline replies.\n- If generated files are required, create them as local files, verify they exist, and attach each one with a repeated --attach argument.\n\nCommand shape:\ngog gmail send --account __GMAIL_ACCOUNT__ --to \"<sender-email>\" --subject \"Re: <original subject>\" --reply-to-message-id \"{{messages[0].id}}\" --body-file - --no-input --yes\n\nCommand shape with attachments:\ngog gmail send --account __GMAIL_ACCOUNT__ --to \"<sender-email>\" --subject \"Re: <original subject>\" --reply-to-message-id \"{{messages[0].id}}\" --body-file <reply-file> --attach <file1> --attach <file2> --no-input --yes\n\nIf you cannot complete the request yourself, send this exact bilingual timeout/failure reply in the same Gmail thread:\nI could not complete this request within 300 seconds. Please retry or split the request into smaller steps.\n\nЯ не смог выполнить этот запрос в течение 300 секунд. Пожалуйста, повторите попытку или разбейте запрос на меньшие шаги.\n\nAfter sending the Gmail reply, return a short internal summary of what you sent. Do not include MEDIA lines in your final assistant message.",
+    "deliver": false,
+    "allowUnsafeExternalContent": true,
+    "thinking": "medium",
+    "timeoutSeconds": 300,
+    "transform": {
+      "module": "gmail-allowlist.mjs"
+    }
+  }
+]
